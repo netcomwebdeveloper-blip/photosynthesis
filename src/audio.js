@@ -8,36 +8,57 @@
  * LOUDNESS
  * ---------------------------------------------------------------------------
  * The old build was quiet for three separate reasons, all of them stacking:
+ * master gain sat at 0.5, effect presets were authored too low, and narration
+ * never touched WebAudio at all — clips played straight out of an <audio>
+ * element and speech went to the OS synthesiser, so the master gain that
+ * everything was supposedly balanced against did nothing to either.
  *
- *   1. The master gain sat at 0.5, so everything lost 6 dB before it started.
- *   2. Effect presets were authored at 0.09–0.22, which after the master gain
- *      landed at 0.045–0.11. Barely audible over a headset's own fan.
- *   3. Narration never touched WebAudio at all. Clips played straight out of an
- *      <audio> element and speech went to the OS synthesiser, so the master
- *      gain that everything was supposedly balanced against did nothing to
- *      either of them.
+ * There is now a real bus:
  *
- * Now there is a real bus:
- *
- *      clips ─┐
- *             ├─ narration (1.0) ─┐
- *      sfx ───────── sfx (0.7) ───┴─ master ─ compressor ─ limiter ─ out
+ *      track / clips ─┐
+ *                      ├─ narration (1.0) ─┐
+ *      sfx ─────────────── sfx (0.7) ──────┴─ master ─ compressor ─ limiter ─ out
  *
  * The compressor is what actually makes this *sound* loud rather than just
- * measure loud: narration peaks get held down so the makeup gain can lift the
- * whole line, which is how a voice stays intelligible over ambience. The
- * limiter after it is a safety catch so a stacked chime can never clip.
+ * measure loud. The limiter after it is a safety catch so a stacked chime can
+ * never clip.
  *
- * Speech synthesis is the one thing that cannot be routed — the browser owns
- * that output path. It is set to volume 1.0 and a slightly slower rate, but if
- * you need narration genuinely loud, register mp3s via registerClip(); those go
- * through the bus and get the full chain.
+ * ---------------------------------------------------------------------------
+ * ONE RECORDED FILE, MANY LINES
+ * ---------------------------------------------------------------------------
+ * registerNarrationTrack(url, NARRATION_ORDER) loads a single mp3 containing
+ * every line of narration recorded back-to-back, with a pause of silence
+ * between each one, and automatically slices it into per-line segments by
+ * detecting those silences. NARRATION_ORDER below is the fixed order the
+ * lines must be recorded in — see NARRATION_SCRIPT.md for the exact words.
+ *
+ * The slicing happens once, at load, against the *recorded* order. Playback
+ * order can differ from that — the root lab lets a child press the four ideas
+ * in any order — because narrate(key, ...) looks the key up in a manifest
+ * built from that one-time pass, not from playback position.
+ *
+ * If the file is missing, fails to load, or the browser lacks decodeAudioData,
+ * every line quietly falls back to speech synthesis. Nothing else changes.
  */
 
 const WORDS_PER_SECOND = 2.6;
 
-/** Clips are lifted before the bus — recordings are usually mastered quiet. */
+/** Clips/track are lifted before the bus — recordings are usually mastered quiet. */
 const CLIP_MAKEUP = 2.4;
+const TRACK_MAKEUP = 1.6;
+
+/**
+ * The fixed recording order for the single narration mp3. Say these fifteen
+ * lines in exactly this order, in one continuous take, with a clear pause of
+ * silence between each — the code finds the boundaries itself. The literal
+ * words are in NARRATION_SCRIPT.md; this array only has to match its order.
+ */
+export const NARRATION_ORDER = [
+    'meet', 'sun', 'water', 'root-open',
+    'root-hair', 'root-osmosis', 'root-ions', 'root-xylem',
+    'co2', 'kitchen', 'food', 'oxygen',
+    'equation', 'finale', 'name'
+];
 
 export class AudioManager {
     constructor({ preferSpeech = true, voiceHint = 'en', volume = 1.0 } = {}) {
@@ -52,6 +73,10 @@ export class AudioManager {
         this.narrationBus = null;
         this.sfxBus = null;
 
+        this.trackBuffer = null;      // decoded AudioBuffer for the one mp3
+        this.trackManifest = null;    // { key: { start, duration } }
+        this.currentSource = null;    // the AudioBufferSourceNode currently playing
+
         this.token = 0;
         this.busy = false;
         this.muted = false;
@@ -60,14 +85,24 @@ export class AudioManager {
 
     /** Must be called from a user gesture (the title card / Enter VR button). */
     unlock() {
-        if (!this.ctx) {
-            const Ctx = window.AudioContext || window.webkitAudioContext;
-            if (!Ctx) return;
-            this.ctx = new Ctx();
-            this.#buildGraph();
-        }
-        if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+        this.#ensureContext();
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
         try { window.speechSynthesis?.getVoices(); } catch (_) {}
+    }
+
+    /**
+     * Creates the context and mix graph if they do not exist yet. Safe to call
+     * before any user gesture — constructing nodes and decoding audio do not
+     * need one, only actually producing sound through the destination does,
+     * and that is what unlock() resumes once the gesture arrives.
+     */
+    #ensureContext() {
+        if (this.ctx) return this.ctx;
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        this.ctx = new Ctx();
+        this.#buildGraph();
+        return this.ctx;
     }
 
     #buildGraph() {
@@ -100,8 +135,6 @@ export class AudioManager {
         this.narrationBus.gain.value = 1.0;
         this.narrationBus.connect(this.master);
 
-        // Effects sit under the voice on purpose — they punctuate, they don't
-        // compete. This is the ratio that used to be missing entirely.
         this.sfxBus = ctx.createGain();
         this.sfxBus.gain.value = 0.7;
         this.sfxBus.connect(this.master);
@@ -115,6 +148,130 @@ export class AudioManager {
         }
     }
 
+    /* -------------------------------------------------------- one mp3 file */
+
+    /**
+     * Loads one recording containing every line back-to-back and slices it by
+     * silence. Never throws — on any failure it logs a warning and every line
+     * falls back to speech synthesis, so it is safe to call unconditionally
+     * at boot without wrapping it in try/catch.
+     *
+     * @param {string} url               e.g. './assets/narration.mp3'
+     * @param {string[]} keysInOrder     NARRATION_ORDER — must match the order
+     *                                   the lines were actually recorded in
+     * @param {object} [opts]
+     * @param {number} [opts.threshold=0.025]        RMS level counted as speech
+     * @param {number} [opts.minSilenceSeconds=0.35] gap that splits two lines
+     * @param {number} [opts.minSegmentSeconds=0.15] shorter blips are discarded
+     * @param {number} [opts.padSeconds=0.06]        edge padding kept per line
+     * @returns {Promise<boolean>} whether the track loaded and is in use
+     */
+    async registerNarrationTrack(url, keysInOrder, opts = {}) {
+        const ctx = this.#ensureContext();
+        if (!ctx) { console.warn('[audio] WebAudio unavailable, using speech synthesis'); return false; }
+
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+            const bytes = await res.arrayBuffer();
+            const buffer = await ctx.decodeAudioData(bytes);
+
+            const segments = this.#detectSegments(buffer, opts);
+            const n = Math.min(segments.length, keysInOrder.length);
+            const manifest = {};
+            for (let i = 0; i < n; i++) manifest[keysInOrder[i]] = segments[i];
+
+            this.trackBuffer = buffer;
+            this.trackManifest = manifest;
+
+            if (segments.length !== keysInOrder.length) {
+                console.warn(
+                    `[audio] narration track: expected ${keysInOrder.length} lines, ` +
+                    `detected ${segments.length} — check the pause between lines in the ` +
+                    `recording (aim for 1–2 s of quiet). Lines beyond the shorter count ` +
+                    `will use speech synthesis instead. Call audio.describeNarrationTrack() ` +
+                    `in the console to see exactly what was found.`
+                );
+            } else {
+                console.log(`[audio] narration track ready — ${n} lines mapped from ${url}`);
+            }
+            return true;
+        } catch (err) {
+            console.warn('[audio] narration track unavailable, using speech synthesis fallback:', err);
+            this.trackBuffer = null;
+            this.trackManifest = null;
+            return false;
+        }
+    }
+
+    /** Console helper: prints what got detected, for tuning the recording. */
+    describeNarrationTrack() {
+        if (!this.trackManifest) { console.log('[audio] no narration track loaded'); return; }
+        for (const [key, seg] of Object.entries(this.trackManifest)) {
+            console.log(`  ${key.padEnd(14)} ${seg.start.toFixed(2)}s  +${seg.duration.toFixed(2)}s`);
+        }
+    }
+
+    /**
+     * Silence-based segmentation. Mixes all channels down, computes RMS over
+     * 20 ms frames, and splits wherever the gap between spoken frames exceeds
+     * minSilenceSeconds. This runs once at load, entirely on the CPU — a
+     * typical two-minute recording takes a few milliseconds.
+     */
+    #detectSegments(buffer, {
+        threshold = 0.025,
+        minSilenceSeconds = 0.35,
+        minSegmentSeconds = 0.15,
+        padSeconds = 0.06
+    } = {}) {
+        const sr = buffer.sampleRate;
+        const channels = [];
+        for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
+
+        const frameSeconds = 0.02;
+        const frameLen = Math.max(1, Math.round(sr * frameSeconds));
+        const frameCount = Math.ceil(buffer.length / frameLen);
+        const rms = new Float32Array(frameCount);
+
+        for (let f = 0; f < frameCount; f++) {
+            const start = f * frameLen;
+            const end = Math.min(buffer.length, start + frameLen);
+            let sum = 0;
+            for (let i = start; i < end; i++) {
+                let s = 0;
+                for (const ch of channels) s += ch[i];
+                s /= channels.length;
+                sum += s * s;
+            }
+            rms[f] = end > start ? Math.sqrt(sum / (end - start)) : 0;
+        }
+
+        const minSilenceFrames = Math.round(minSilenceSeconds / frameSeconds);
+        const runs = [];
+        let segStart = -1, lastActive = -1;
+
+        for (let f = 0; f < frameCount; f++) {
+            if (rms[f] > threshold) {
+                if (segStart === -1) segStart = f;
+                lastActive = f;
+            } else if (segStart !== -1 && (f - lastActive) > minSilenceFrames) {
+                runs.push([segStart, lastActive]);
+                segStart = -1;
+            }
+        }
+        if (segStart !== -1) runs.push([segStart, lastActive]);
+
+        const out = [];
+        for (const [a, b] of runs) {
+            const start = Math.max(0, a * frameSeconds - padSeconds);
+            const end = Math.min(buffer.duration, (b + 1) * frameSeconds + padSeconds);
+            const duration = end - start;
+            if (duration >= minSegmentSeconds) out.push({ start, duration });
+        }
+        return out;
+    }
+
+    /** Manually register a separate mp3 for one line, instead of the shared track. */
     registerClip(key, url) {
         const audio = new Audio(url);
         audio.preload = 'auto';
@@ -132,6 +289,10 @@ export class AudioManager {
     stop() {
         this.token++;
         this.busy = false;
+        if (this.currentSource) {
+            try { this.currentSource.stop(); } catch (_) {}
+            this.currentSource = null;
+        }
         if (this.currentAudio) {
             try { this.currentAudio.pause(); this.currentAudio.currentTime = 0; } catch (_) {}
             this.currentAudio = null;
@@ -140,7 +301,9 @@ export class AudioManager {
     }
 
     /**
-     * Speaks a line and resolves when it finishes.
+     * Speaks a line and resolves when it finishes. Tries, in order: the shared
+     * recording, a manually registered clip, browser speech, or a timed
+     * silence — whichever is available for this key.
      * @returns {Promise<boolean>} false if superseded by a newer line.
      */
     async narrate(key, text) {
@@ -152,6 +315,8 @@ export class AudioManager {
 
         if (this.muted) {
             await this.#sleep(fallbackSeconds * 1000);
+        } else if (this.trackManifest?.[key]) {
+            await this.#playFromTrack(this.trackManifest[key]);
         } else if (this.clips.has(key)) {
             await this.#playClip(this.clips.get(key), fallbackSeconds);
         } else if (this.preferSpeech && window.speechSynthesis) {
@@ -168,6 +333,34 @@ export class AudioManager {
     /** Waits until whatever is currently speaking has finished. */
     async idle() {
         while (this.busy) await this.#sleep(120);
+    }
+
+    /** Plays one slice of the shared recording through the narration bus. */
+    #playFromTrack(seg) {
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(guard);
+                resolve();
+            };
+
+            const src = this.ctx.createBufferSource();
+            src.buffer = this.trackBuffer;
+            const boost = this.ctx.createGain();
+            boost.gain.value = TRACK_MAKEUP;
+            src.connect(boost).connect(this.narrationBus);
+            src.onended = finish;
+
+            this.currentSource = src;
+            try {
+                src.start(0, seg.start, seg.duration);
+            } catch (_) {
+                finish();
+            }
+            const guard = setTimeout(finish, seg.duration * 1000 + 800);
+        });
     }
 
     /** Routes an <audio> element into the narration bus so it gets the chain. */
@@ -226,7 +419,7 @@ export class AudioManager {
                 const utterance = new SpeechSynthesisUtterance(text);
                 utterance.rate = 0.92;
                 utterance.pitch = 1.0;
-                utterance.volume = 1.0;   // was never set; some engines default low
+                utterance.volume = 1.0;
                 const voices = window.speechSynthesis.getVoices() || [];
                 const match = voices.find((v) => v.lang?.toLowerCase().startsWith(this.voiceHint));
                 if (match) utterance.voice = match;
@@ -249,9 +442,6 @@ export class AudioManager {
     sfx(name) {
         if (!this.ctx || this.muted || !this.sfxBus) return;
 
-        // Roughly doubled from the old values. These now land on a bus that is
-        // itself at 0.7 under a master of 1.0, so the audible result is about
-        // four times what it used to be.
         const presets = {
             absorb:  { freqs: [392, 587],             dur: 0.28, type: 'sine',     gain: 0.55 },
             reject:  { freqs: [220, 165],             dur: 0.24, type: 'triangle', gain: 0.45 },

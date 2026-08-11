@@ -3,7 +3,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 
 import { Tweener } from './tween.js';
 import { whenFontsReady } from './labels.js';
-import { AudioManager } from './audio.js';
+import { AudioManager, NARRATION_ORDER } from './audio.js';
 import { World, VIEWER_SPOT } from './world.js';
 import { CameraDirector } from './camera.js';
 import { Story } from './story.js';
@@ -59,7 +59,13 @@ const CONFIG = {
     audio: {
         // Master level for the whole mix. 1.0 is unity through the compressor;
         // push to 1.2 if the room is loud. The old build sat at 0.5.
-        volume: 1.0
+        volume: 1.0,
+        // One recording containing every narration line, sliced automatically
+        // by the silence between them. See NARRATION_SCRIPT.md for the exact
+        // words and the order they must be recorded in. If this file is
+        // missing, every line falls back to speech synthesis — nothing else
+        // breaks.
+        narrationTrack: './assets/narration.mp3'
     },
     terrain: {
         enabled: true             // placement and culling live in environment.js
@@ -164,6 +170,14 @@ class App {
         // Canvas text silently falls back to a default face if the webfont has
         // not loaded, and every label texture is baked exactly once.
         await whenFontsReady();
+
+        // Decoding does not need a user gesture, only playback does — so this
+        // is ready well before the title card is touched. Never throws: on any
+        // failure it logs a warning and every line falls back to speech
+        // synthesis instead.
+        if (CONFIG.audio.narrationTrack) {
+            await this.audio.registerNarrationTrack(CONFIG.audio.narrationTrack, NARRATION_ORDER);
+        }
 
         this.world.build();
 
@@ -307,4 +321,7 @@ class App {
     }
 }
 
-new App();
+// Exposed for console debugging only — e.g. app.audio.describeNarrationTrack()
+// to inspect how the narration recording was sliced. Nothing in the app reads
+// this global; it is purely a convenience for the person tuning the audio.
+window.app = new App();

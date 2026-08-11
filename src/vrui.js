@@ -112,7 +112,12 @@ export class ExitControl {
             btn.type = 'button';
             btn.textContent = 'Exit VR';
             Object.assign(btn.style, {
-                position: 'fixed', top: '18px', right: '18px', zIndex: '30',
+                position: 'fixed',
+                // Bottom-right, clear of any notch/home-indicator on mobile —
+                // env() falls back to 18px on browsers that don't support it.
+                bottom: 'max(18px, env(safe-area-inset-bottom))',
+                right: 'max(18px, env(safe-area-inset-right))',
+                zIndex: '30',
                 display: 'none', padding: '11px 20px', border: '0',
                 borderRadius: '999px', cursor: 'pointer',
                 font: '600 15px/1 "Baloo 2", "Segoe UI Rounded", Verdana, sans-serif',

@@ -24,14 +24,25 @@ import { Ease } from './tween.js';
    ========================================================================== */
 
 const CAMERA_SHOTS = {
+    /* Every shot below was checked against where the caption actually sits —
+       world.js floats it at a fixed (0, 3.05, 0), with the finale line just
+       under it at (0, 2.55, 0). That point does not move with the subject, so
+       a shot that frames the action tightly can walk the caption straight out
+       of view. Each entry here keeps the angle between the view direction and
+       that fixed caption point under about 23° (the camera's vertical half-FOV
+       is 27.5°), which is what "camera pulled back enough to show the whole
+       beat, sentence included" cashes out to in practice. sun and roots needed
+       the biggest change — both used to point 35°+ away from the caption.
+       crossSection is checked the same way against the root lab's own caption,
+       which travels with it rather than sitting at the world origin. */
     wide: { pos: [0, 1.8, 6.4], target: [0, 1.5, 0] },
-    plant: { pos: [0.5, 1.7, 4.4], target: [0, 1.5, 0] },
-    sun: { pos: [-1.4, 2.6, 4.6], target: [-3.4, 5.2, -2.0] },
-    roots: { pos: [0.3, 1.05, 3.3], target: [0, 0.42, 0] },
-    crossSection: { pos: [0.15, 1.70, 3.55], target: [0.95, 1.32, 2.15] },
+    plant: { pos: [0.5, 1.75, 4.8], target: [0, 1.55, 0] },
+    sun: { pos: [0, 2.05, 6.2], target: [-0.6, 2.75, -0.4] },
+    roots: { pos: [0.3, 1.65, 4.6], target: [0, 1.5, 0.15] },
+    crossSection: { pos: [0.05, 1.78, 3.95], target: [0.95, 1.35, 2.15] },
     air: { pos: [1.2, 2.0, 4.0], target: [0, 2.0, 0] },
-    kitchen: { pos: [0, 1.7, 3.1], target: [0, 1.65, 1.7] },
-    food: { pos: [0.9, 1.5, 3.6], target: [0, 1.4, 0] },
+    kitchen: { pos: [0, 1.95, 4.0], target: [0, 1.78, 1.7] },
+    food: { pos: [0.9, 1.6, 4.3], target: [0, 1.5, 0] },
     oxygen: { pos: [1.0, 2.4, 4.4], target: [0, 2.6, 0] },
     finale: { pos: [0, 2.0, 7.4], target: [0, 1.9, 0] }
 };
