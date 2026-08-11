@@ -7,6 +7,10 @@ import { AudioManager } from './audio.js';
 import { World, VIEWER_SPOT } from './world.js';
 import { CameraDirector } from './camera.js';
 import { Story } from './story.js';
+import { Environment } from './environment.js';
+import { Interaction } from './interaction.js';
+import { ExitControl } from './vrui.js';
+import { RootLab } from './rootlab.js';
 
 /* ============================================================================
    Bootstrap
@@ -35,6 +39,10 @@ import { Story } from './story.js';
 
    4. Z-fighting. Ground surfaces are layered centimetres apart. Coplanar
       planes flicker, and the flicker tracks your head, which reads as shimmer.
+
+   The forest terrain is the one thing that could undo point 3 on its own, so it
+   loads before the first frame, receives shadow but never casts, and has its
+   matrices frozen. If it fails to load the lesson still runs on the old ground.
    ========================================================================== */
 
 const CONFIG = {
@@ -47,6 +55,14 @@ const CONFIG = {
     quality: {
         adaptive: true,
         minFps: 62
+    },
+    audio: {
+        // Master level for the whole mix. 1.0 is unity through the compressor;
+        // push to 1.2 if the room is loud. The old build sat at 0.5.
+        volume: 1.0
+    },
+    terrain: {
+        enabled: true             // placement and culling live in environment.js
     }
 };
 
@@ -78,8 +94,6 @@ class App {
 
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        // The set is static, so the shadow map is baked rather than re-rendered
-        // 72 times a second.
         this.renderer.shadowMap.autoUpdate = false;
 
         this.renderer.xr.enabled = true;
@@ -97,10 +111,6 @@ class App {
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x8fd0ee);
 
-        // The rig exists purely so the headset has something to stand on. It is
-        // placed once and then left alone — no travel, no spin, no snap turns.
-        // A viewer who wants to move can simply walk; roomscale tracking does
-        // the rest, and nothing in software ever moves them.
         this.rig = new THREE.Group();
         this.rig.name = 'rig';
         this.scene.add(this.rig);
@@ -113,14 +123,37 @@ class App {
     }
 
     initManagers() {
-        this.audio = new AudioManager();
+        this.audio = new AudioManager({ volume: CONFIG.audio.volume });
         this.world = new World(this.scene, this.tweener);
+        this.environment = new Environment(this.scene, { renderer: this.renderer });
         this.cameraDirector = new CameraDirector(this.camera, this.renderer, this.tweener);
+
+        // One pointer system, shared by the exit control and every hotspot in
+        // the root lab, so pressing anything works the same way everywhere.
+        this.interaction = new Interaction(this.renderer, this.camera, this.scene);
+        this.interaction.attachTo(this.rig);
+
+        this.exitControl = new ExitControl({
+            renderer: this.renderer,
+            rig: this.rig,
+            interaction: this.interaction,
+            audio: this.audio
+        });
+
+        this.rootLab = new RootLab({
+            scene: this.scene,
+            tweener: this.tweener,
+            audio: this.audio,
+            interaction: this.interaction,
+            billboards: this.world.billboards || null
+        });
+
         this.story = new Story({
             world: this.world,
             cameraDirector: this.cameraDirector,
             audio: this.audio,
-            tweener: this.tweener
+            tweener: this.tweener,
+            rootLab: this.rootLab
         });
 
         this.renderer.xr.addEventListener('sessionstart', () => this.onSessionStart());
@@ -133,6 +166,20 @@ class App {
         await whenFontsReady();
 
         this.world.build();
+
+        // Terrain and cross-section both go in before the first frame. Loading
+        // a mesh this size mid-session drops frames, and dropped frames get
+        // reprojected, and reprojected frames swim.
+        if (CONFIG.terrain.enabled) {
+            const ok = await this.environment.load();
+            // The terrain becomes the ground, so the flat meadow discs and the
+            // grass scattered across them are hidden. Leaving them would give
+            // coplanar flicker on the discs and grass floating over uneven
+            // ground, and the forest brings its own undergrowth anyway.
+            if (ok) this.world.setGroundVisible?.(false);
+        }
+        await this.rootLab.build();
+
         this.refreshShadows();
 
         const slot = document.getElementById('vr-slot');
@@ -179,8 +226,6 @@ class App {
     onSessionStart() {
         this.audio.unlock();
 
-        // Place the rig once. Never the camera — writing to camera.position
-        // during a session fights the headset pose and shows up as jitter.
         this.rig.position.set(VIEWER_SPOT.x, 0, VIEWER_SPOT.z);
         this.rig.rotation.set(0, 0, 0);
 
@@ -196,7 +241,6 @@ class App {
         this.refreshShadows();
         setTimeout(() => this.calibrateEyeHeight(), 1200);
 
-        // Start the story over so nobody enters halfway through a beat.
         if (this.started) this.story.restart();
         else { this.started = true; document.getElementById('title-card')?.classList.add('is-gone'); this.story.start(); }
     }
@@ -208,11 +252,6 @@ class App {
         this.story.restart();
     }
 
-    /**
-     * Safety net: if the runtime only granted a 'local' reference space, the
-     * reported eye height is near zero and the whole world looks wrong. Lift
-     * the rig once rather than leaving the viewer standing on the floor.
-     */
     calibrateEyeHeight() {
         if (!this.renderer.xr.isPresenting) return;
         const eye = this.camera.position.y;
@@ -231,7 +270,6 @@ class App {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    /** Sheds detail if the headset cannot hold frame rate. */
     monitorPerformance(dt) {
         if (!CONFIG.quality.adaptive || this.qualityReduced) return;
         if (!this.renderer.xr.isPresenting || dt <= 0) return;
@@ -246,6 +284,8 @@ class App {
             this.qualityReduced = true;
             console.warn(`[perf] ${avg.toFixed(1)} fps — shedding detail`);
             this.world.setQuality('low');
+            this.environment.setQuality('low');
+            this.rootLab.setQuality('low');
             this.renderer.shadowMap.enabled = false;
             this.renderer.xr.setFoveation(1.0);
         }
@@ -257,6 +297,9 @@ class App {
 
         this.tweener.update(dt);
         this.world.update(dt, this.elapsed, this.camera);
+        this.rootLab.update(dt, this.elapsed);
+        this.interaction.update();
+        this.exitControl.update(dt);
         this.cameraDirector.update(dt);   // no-op while presenting
 
         this.monitorPerformance(dt);

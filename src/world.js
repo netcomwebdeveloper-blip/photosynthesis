@@ -284,6 +284,20 @@ export class World {
         }
         flowers.instanceMatrix.needsUpdate = true;
         this.scene.add(flowers);
+
+        // Kept so the forest terrain can take over as the ground. The discs are
+        // flat and the grass is planted at a fixed height, both of which assume
+        // level ground — on real terrain the discs flicker where they graze the
+        // surface and the blades float or sink.
+        this.meadowParts = [field, clearing, grass, flowers];
+    }
+
+    /**
+     * Hides the flat meadow so an imported terrain can be the ground instead.
+     * Called once at boot; the terrain brings its own grass and flowers.
+     */
+    setGroundVisible(visible) {
+        for (const part of this.meadowParts || []) part.visible = visible;
     }
 
     /**

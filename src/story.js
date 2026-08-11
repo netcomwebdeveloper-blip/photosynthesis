@@ -7,6 +7,13 @@ import { Ease } from './tween.js';
    sentence and one thing happening on screen, and the two are timed to land
    together — a child should be able to follow this with the sound off.
 
+   Beat 3 is now the exception, on purpose. Water is the one input a child can
+   be shown the *mechanism* of rather than just the fact of, so that beat opens
+   into a cross-section they can point at and take as long as they like over.
+   Everything before and after it stays a guided ride. The lesson always resolves
+   on its own if nobody touches anything, so an unattended showing still reaches
+   beat 4.
+
    Structural rules kept from the previous project:
      • every beat is named, logged and individually wrapped, so one failure
        cannot silently kill the rest of the story
@@ -21,6 +28,7 @@ const CAMERA_SHOTS = {
     plant: { pos: [0.5, 1.7, 4.4], target: [0, 1.5, 0] },
     sun: { pos: [-1.4, 2.6, 4.6], target: [-3.4, 5.2, -2.0] },
     roots: { pos: [0.3, 1.05, 3.3], target: [0, 0.42, 0] },
+    crossSection: { pos: [0.15, 1.70, 3.55], target: [0.95, 1.32, 2.15] },
     air: { pos: [1.2, 2.0, 4.0], target: [0, 2.0, 0] },
     kitchen: { pos: [0, 1.7, 3.1], target: [0, 1.65, 1.7] },
     food: { pos: [0.9, 1.5, 3.6], target: [0, 1.4, 0] },
@@ -29,11 +37,12 @@ const CAMERA_SHOTS = {
 };
 
 export class Story {
-    constructor({ world, cameraDirector, audio, tweener }) {
+    constructor({ world, cameraDirector, audio, tweener, rootLab = null }) {
         this.world = world;
         this.camera = cameraDirector;
         this.audio = audio;
         this.tweener = tweener;
+        this.rootLab = rootLab;
 
         this.generation = 0;
         this.running = false;
@@ -49,6 +58,9 @@ export class Story {
         this.running = false;
         this.generation++;
         this.audio.stop();
+        // A lesson left armed would keep listening for presses against a story
+        // that no longer exists.
+        this.rootLab?.hide().catch?.(() => {});
     }
 
     /** Restarts cleanly — used when entering or leaving the headset. */
@@ -93,12 +105,26 @@ export class Story {
                 await this.hold(2.0);
             })) break;
 
-            /* 3 ── Water --------------------------------------------------- */
+            /* 3 ── Water: the interactive beat -----------------------------
+               The one place the viewer takes over. The cutaway rises out of the
+               soil beside the plant — it comes to them, nobody's head is moved,
+               which is the same rule the close-up in beat 5 follows. */
             if (!await beat('3 water', async () => {
                 this.camera.moveTo({ ...CAMERA_SHOTS.roots, seconds: 3.4 });
                 this.world.fade('water', 1, 1.6);
                 await this.line('Roots drink water from the soil.', 'water');
-                await this.hold(2.6);
+                await this.hold(1.2);
+            })) break;
+
+            if (!await beat('3b inside a root', async () => {
+                if (!this.rootLab) return;
+                this.camera.moveTo({ ...CAMERA_SHOTS.crossSection, seconds: 3.0 });
+                await this.rootLab.show();
+                await this.line('Let us look inside a root.', 'root-open');
+                await this.rootLab.runLesson({ timeoutSeconds: 110 });
+                await this.rootLab.hide();
+                this.camera.moveTo({ ...CAMERA_SHOTS.roots, seconds: 2.0 });
+                await this.hold(0.8);
             })) break;
 
             /* 4 ── Carbon dioxide ------------------------------------------ */
@@ -171,7 +197,8 @@ export class Story {
             this.world.fadeAll(0, 0.8),
             this.world.say('', 'caption'),
             this.world.say('', 'finale'),
-            this.world.showKitchen(false, 0.6)
+            this.world.showKitchen(false, 0.6),
+            this.rootLab ? this.rootLab.hide() : Promise.resolve()
         ]);
     }
 
