@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>How does a plant make its own food?</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&display=swap" rel="stylesheet" />
+
+<!-- A leaf, inlined. Stops the browser asking the server for /favicon.ico and
+     logging a 404 that has nothing to do with the app. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M27 3C12 5 6 12 6 22c0 2 1 4 2 5 1-9 6-14 15-17-7 4-11 10-12 17 10 1 16-7 16-24z' fill='%237cc05a'/%3E%3C/svg%3E" />
+
+<!-- three.js loads from a CDN, so there is nothing to install and no files to
+     place by hand. Needs an internet connection the first time; after that the
+     browser caches it.
+
+     To run fully offline instead: download these two files, put them at
+     vendor/three/build/three.module.js and
+     vendor/three/addons/webxr/VRButton.js, then swap the two URLs below for
+     "./vendor/three/build/three.module.js" and "./vendor/three/addons/".
+
+     The src/*.js entries are a safety net, not the normal path. Every module
+     already imports its neighbours as "./tween.js" and friends. But some
+     editors and auto-import tools strip the leading "./", and a bare
+     "tween.js" is a *module specifier*, not a relative path — the browser
+     refuses it outright with "Failed to resolve module specifier". These
+     entries make that mistake harmless instead of fatal. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/",
+
+    "tween.js": "./src/tween.js",
+    "labels.js": "./src/labels.js",
+    "audio.js": "./src/audio.js",
+    "world.js": "./src/world.js",
+    "camera.js": "./src/camera.js",
+    "story.js": "./src/story.js"
+  }
+}
+</script>
+
+<style>
+  /* The only DOM in the whole project is the title card and the Enter VR pill.
+     Everything else — every word the child reads — lives in the 3D scene. */
+  :root {
+    --leaf:  #7cc05a;
+    --deep:  #0d3722;
+    --sun:   #ffd166;
+    --sky:   #8fd0ee;
+    --cream: #fffaf0;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--deep);
+    overflow: hidden;
+    font-family: "Baloo 2", "Segoe UI Rounded", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  canvas { display: block; }
+
+  /* ---------- title card ---------- */
+  #title-card {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 22px;
+    padding: 24px;
+    text-align: center;
+    color: var(--cream);
+    cursor: pointer;
+    background:
+      radial-gradient(circle at 50% 30%, #2b7a4b 0%, #10402a 55%, #071f14 100%);
+    transition: opacity 900ms ease, visibility 900ms;
+  }
+  #title-card.is-gone { opacity: 0; visibility: hidden; }
+
+  .sprout {
+    width: 74px;
+    height: 74px;
+    border-radius: 54% 6% 54% 54%;
+    background: linear-gradient(140deg, var(--leaf), var(--sun));
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+    animation: unfurl 2.4s ease-in-out infinite;
+  }
+  @keyframes unfurl {
+    0%, 100% { transform: rotate(-16deg) scale(0.9); }
+    50%      { transform: rotate(10deg) scale(1.06); }
+  }
+
+  #title-card h1 {
+    margin: 0;
+    font-size: clamp(30px, 6.4vw, 62px);
+    font-weight: 800;
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+    text-shadow: 0 4px 26px rgba(0, 0, 0, 0.4);
+  }
+  #title-card h1 em { font-style: normal; color: var(--sun); }
+
+  #title-card p {
+    margin: 0;
+    font-size: clamp(15px, 2.4vw, 20px);
+    font-weight: 600;
+    color: rgba(255, 250, 240, 0.72);
+  }
+
+  .tap {
+    margin-top: 6px;
+    padding: 13px 28px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    font-size: 16px;
+    font-weight: 700;
+    animation: pulse 2.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.85; }
+    50%      { transform: scale(1.045); opacity: 1; }
+  }
+
+  /* ---------- Enter VR ----------
+     WebXR can only start from a user gesture, so this one control has to
+     exist. It hides itself on headsets that cannot offer immersive VR. */
+  #vr-slot {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 15;
+  }
+  #vr-slot button {
+    position: static !important;
+    transform: none !important;
+    font-family: "Baloo 2", system-ui, sans-serif !important;
+    font-size: 15px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0 !important;
+    background: rgba(255, 209, 102, 0.94) !important;
+    color: #3a2405 !important;
+    border: 1px solid rgba(255, 255, 255, 0.5) !important;
+    border-radius: 999px !important;
+    padding: 12px 22px !important;
+    width: auto !important;
+    opacity: 1 !important;
+    cursor: pointer;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<div id="title-card">
+  <div class="sprout"></div>
+  <h1>How does a plant<br />make its <em>own food</em>?</h1>
+  <p>A little science story</p>
+  <div class="tap">Tap to begin</div>
+</div>
+
+<div id="vr-slot"></div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

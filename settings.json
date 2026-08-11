@@ -1,0 +1,27 @@
+{
+  // Live Server (ritwickdey.LiveServer) settings for this project.
+  //
+  // The port is pinned so the Quest port-forwarding step in README.md always
+  // matches. Change it here and change it there too.
+  "liveServer.settings.port": 5500,
+  "liveServer.settings.root": "/",
+  "liveServer.settings.CustomBrowser": "chrome",
+
+  // Live Server serves plain HTTP. That is fine on a laptop, and it is fine on
+  // the headset too as long as you reach it through localhost port forwarding
+  // (see README) — localhost counts as a secure context, so WebXR works.
+  //
+  // If you would rather serve HTTPS directly over the LAN, generate a cert with
+  // mkcert and uncomment this block:
+  //
+  // "liveServer.settings.https": {
+  //   "enable": true,
+  //   "cert": "C:\\certs\\cert.pem",
+  //   "key": "C:\\certs\\key.pem",
+  //   "passphrase": ""
+  // },
+
+  "files.associations": {
+    "*.js": "javascript"
+  }
+}
